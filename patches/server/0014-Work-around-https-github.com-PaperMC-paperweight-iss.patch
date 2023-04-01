@@ -5,7 +5,7 @@ Subject: [PATCH] Work around https://github.com/PaperMC/paperweight/issues/194
 
 
 diff --git a/src/main/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/src/main/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-index aab6ffceaabecf8efa7f5d83f30a537a3f62c7bd..b0e978c4424b6eaacaa629958f1372c776a5f59b 100644
+index 0243b6cd61c96656e61fce7d9f85fbf859c2f04d..776ecde97e10d5c6e0323960f2bd297684387735 100644
 --- a/src/main/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java
 +++ b/src/main/java/net/minecraft/server/network/ServerGamePacketListenerImpl.java
 @@ -494,7 +494,7 @@ public class ServerGamePacketListenerImpl implements ServerPlayerConnection, Tic
