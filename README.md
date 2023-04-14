@@ -7,7 +7,7 @@
 ## Overview
 
 Folia groups nearby loaded chunks to form an "independent region."
-See [REGION_LOGIC.md](REGION_LOGIC.md) for exact details on how Folia
+See [the PaperMC documentation](https://docs.papermc.io/folia/reference/region-logic) for exact details on how Folia
 will group nearby chunks.
 Each independent region has its own tick loop, which is ticked at the
 regular Minecraft tickrate (20TPS). The tick loops are executed
@@ -149,7 +149,7 @@ issues, which then become near impossible to debug.
 ### Current API additions
 
 To properly understand API additions, please read
-[PROJECT_DESCRIPTION.md](PROJECT_DESCRIPTION.md).
+[Project overview](https://docs.papermc.io/folia/reference/overview).
 
 - RegionScheduler, AsyncScheduler, GlobalRegionScheduler, and EntityScheduler 
   acting as a replacement for  the BukkitScheduler.
@@ -161,7 +161,7 @@ To properly understand API additions, please read
 ### Thread contexts for API
 
 To properly understand API additions, please read
-[PROJECT_DESCRIPTION.md](PROJECT_DESCRIPTION.md).
+[Project overview](https://docs.papermc.io/folia/reference/overview).
 
 General rules of thumb:
 

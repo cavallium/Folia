@@ -3,10 +3,8 @@ From: Spottedleaf <Spottedleaf@users.noreply.github.com>
 Date: Sun, 2 Oct 2022 21:28:53 -0700
 Subject: [PATCH] Threaded Regions
 
-Connection thread-safety fixes
-
-- send packet
-- pending addition
+See https://docs.papermc.io/folia/reference/overview and
+https://docs.papermc.io/folia/reference/region-logic
 
 diff --git a/src/main/java/ca/spottedleaf/concurrentutil/collection/MultiThreadedQueue.java b/src/main/java/ca/spottedleaf/concurrentutil/collection/MultiThreadedQueue.java
 index f4415f782b32fed25da98e44b172f717c4d46e34..ba7c24b3627a1827721d2462add15fdd4adbed90 100644
@@ -1850,7 +1848,7 @@ index 3c17001bcd3862a76a22df488bff80a0ff4d1b83..b2fffaa862df045bacb346f3cbe7eb96
              }
          }
 diff --git a/src/main/java/io/papermc/paper/chunk/system/ChunkSystem.java b/src/main/java/io/papermc/paper/chunk/system/ChunkSystem.java
-index 61d03808c8d1ab822d9b2f31fab0de14089a3b15..9051a556fea7ee35014db7bdd75b5476f672f5a9 100644
+index 61d03808c8d1ab822d9b2f31fab0de14089a3b15..370e649a255a456d7f901b22e26241e135009af7 100644
 --- a/src/main/java/io/papermc/paper/chunk/system/ChunkSystem.java
 +++ b/src/main/java/io/papermc/paper/chunk/system/ChunkSystem.java
 @@ -91,6 +91,9 @@ public final class ChunkSystem {
@@ -1863,7 +1861,7 @@ index 61d03808c8d1ab822d9b2f31fab0de14089a3b15..9051a556fea7ee35014db7bdd75b5476
      }
  
      public static void onChunkHolderDelete(final ServerLevel level, final ChunkHolder holder) {
-@@ -98,6 +101,9 @@ public final class ChunkSystem {
+@@ -98,30 +101,34 @@ public final class ChunkSystem {
          for (int index = 0, len = chunkMap.regionManagers.size(); index < len; ++index) {
              chunkMap.regionManagers.get(index).removeChunk(holder.pos.x, holder.pos.z);
          }
@@ -1873,7 +1871,13 @@ index 61d03808c8d1ab822d9b2f31fab0de14089a3b15..9051a556fea7ee35014db7bdd75b5476
      }
  
      public static void onChunkBorder(final LevelChunk chunk, final ChunkHolder holder) {
-@@ -109,19 +115,19 @@ public final class ChunkSystem {
+         chunk.playerChunk = holder;
++        chunk.level.getCurrentWorldData().addChunk(chunk); // Folia - region threading
+     }
+ 
+     public static void onChunkNotBorder(final LevelChunk chunk, final ChunkHolder holder) {
+-
++        chunk.level.getCurrentWorldData().removeChunk(chunk); // Folia - region threading
      }
  
      public static void onChunkTicking(final LevelChunk chunk, final ChunkHolder holder) {
@@ -1888,7 +1892,7 @@ index 61d03808c8d1ab822d9b2f31fab0de14089a3b15..9051a556fea7ee35014db7bdd75b5476
  
      public static void onChunkEntityTicking(final LevelChunk chunk, final ChunkHolder holder) {
 -        chunk.level.getChunkSource().entityTickingChunks.add(chunk);
-+        chunk.level.getCurrentWorldData().addEntityTickingChunks(chunk); // Folia - region threading
++        chunk.level.getCurrentWorldData().addEntityTickingChunk(chunk); // Folia - region threading
      }
  
      public static void onChunkNotEntityTicking(final LevelChunk chunk, final ChunkHolder holder) {
@@ -1898,68 +1902,18 @@ index 61d03808c8d1ab822d9b2f31fab0de14089a3b15..9051a556fea7ee35014db7bdd75b5476
  
      public static ChunkHolder getUnloadingChunkHolder(final ServerLevel level, final int chunkX, final int chunkZ) {
 diff --git a/src/main/java/io/papermc/paper/chunk/system/RegionizedPlayerChunkLoader.java b/src/main/java/io/papermc/paper/chunk/system/RegionizedPlayerChunkLoader.java
-index 99dc2038aa4fb0f70dc3670e451018ff541d3a85..5b4025178c1e476ed5dd0808cc33bf1ec7c08b66 100644
+index 63c69c4da5fcbd5901c9fc3427f69626e16492ee..88c48279d04b2bc5a67de0fdbd2c266516cbcd49 100644
 --- a/src/main/java/io/papermc/paper/chunk/system/RegionizedPlayerChunkLoader.java
 +++ b/src/main/java/io/papermc/paper/chunk/system/RegionizedPlayerChunkLoader.java
-@@ -232,17 +232,19 @@ public class RegionizedPlayerChunkLoader {
+@@ -234,7 +234,7 @@ public class RegionizedPlayerChunkLoader {
      public void tick() {
          TickThread.ensureTickThread("Cannot tick player chunk loader async");
          long currTime = System.nanoTime();
--        for (final ServerPlayer player : this.world.players()) {
-+        for (final ServerPlayer player : this.world.getLocalPlayers()) { // Folia - region threding
-             player.chunkLoader.update();
-             player.chunkLoader.midTickUpdate(currTime);
-         }
-     }
- 
--    public void tickMidTick() {
-+    public boolean tickMidTick() { // Folia - region threading - report whether tickets were added
-         final long time = System.nanoTime();
--        for (final ServerPlayer player : this.world.players()) {
--            player.chunkLoader.midTickUpdate(time);
-+        boolean ret = false; // Folia - region threading - report whether tickets were added
-+        for (final ServerPlayer player : this.world.getLocalPlayers()) { // Folia - region threading
-+            ret |= player.chunkLoader.midTickUpdate(time);
-         }
-+        return ret; // Folia - region threading - report whether tickets were added
-     }
- 
-     private static long[] generateBFSOrder(final int radius) {
-@@ -384,13 +386,13 @@ public class RegionizedPlayerChunkLoader {
-             this.player = player;
-         }
- 
--        private void flushDelayedTicketOps() {
-+        private boolean flushDelayedTicketOps() { // Folia - region threading - report whether tickets were added
-             if (this.delayedTicketOps.isEmpty()) {
--                return;
-+                return false; // Folia - region threading - report whether tickets were added
-             }
-             this.world.chunkTaskScheduler.chunkHolderManager.pushDelayedTicketUpdates(this.delayedTicketOps);
-             this.delayedTicketOps.clear();
--            this.world.chunkTaskScheduler.chunkHolderManager.tryDrainTicketUpdates();
-+            return this.world.chunkTaskScheduler.chunkHolderManager.tryDrainTicketUpdates() == Boolean.TRUE; // Folia - region threading - report whether tickets were added
-         }
- 
-         private void pushDelayedTicketOp(final ChunkHolderManager.TicketOperation<?, ?> op) {
-@@ -607,7 +609,7 @@ public class RegionizedPlayerChunkLoader {
-             return Math.max(Math.abs(dx), Math.abs(dz)) <= this.lastTickDistance;
-         }
- 
--        void midTickUpdate(final long time) {
-+        boolean midTickUpdate(final long time) { // Folia - region threading - report whether tickets were added
-             TickThread.ensureTickThread(this.player, "Cannot tick player chunk loader async");
-             // update rate limits
-             this.chunkSendCounter.update(time);
-@@ -799,7 +801,7 @@ public class RegionizedPlayerChunkLoader {
-                 this.chunkSendCounter.addTime(time, sendSlots);
-             }
- 
--            this.flushDelayedTicketOps();
-+            return this.flushDelayedTicketOps(); // Folia - region threading - report whether tickets were added
-             // we assume propagate ticket levels happens after this call
-         }
- 
+-        for (final ServerPlayer player : new java.util.ArrayList<>(this.world.players())) {
++        for (final ServerPlayer player : new java.util.ArrayList<>(this.world.getLocalPlayers())) { // Folia - region threding
+             final PlayerChunkLoaderData loader = player.chunkLoader;
+             if (loader == null || loader.world != this.world) {
+                 // not our problem anymore
 diff --git a/src/main/java/io/papermc/paper/chunk/system/entity/EntityLookup.java b/src/main/java/io/papermc/paper/chunk/system/entity/EntityLookup.java
 index 61c170555c8854b102c640b0b6a615f9f732edbf..515cc130a411f218ed20628eb918be9d770b9939 100644
 --- a/src/main/java/io/papermc/paper/chunk/system/entity/EntityLookup.java
@@ -2993,10 +2947,10 @@ index c6d20bc2f0eab737338db6b88dacb63f0decb66c..9ac75b6c9d9698c6369978c4b004a82a
          return ret;
      }
 diff --git a/src/main/java/io/papermc/paper/chunk/system/scheduling/ChunkTaskScheduler.java b/src/main/java/io/papermc/paper/chunk/system/scheduling/ChunkTaskScheduler.java
-index 84cc9397237fa0c17aa1012dfb5683c90eb6d3b8..25db30284e3bab9ebad1ca7320db66116057e599 100644
+index e944bd32df98a1dd7dde8c5ce3698b6d81862cbf..c185a85e18932ac8ee96a01779e1e1a580197613 100644
 --- a/src/main/java/io/papermc/paper/chunk/system/scheduling/ChunkTaskScheduler.java
 +++ b/src/main/java/io/papermc/paper/chunk/system/scheduling/ChunkTaskScheduler.java
-@@ -113,7 +113,7 @@ public final class ChunkTaskScheduler {
+@@ -117,7 +117,7 @@ public final class ChunkTaskScheduler {
      public final PrioritisedThreadPool.PrioritisedPoolExecutor parallelGenExecutor;
      public final PrioritisedThreadPool.PrioritisedPoolExecutor loadExecutor;
  
@@ -3005,7 +2959,7 @@ index 84cc9397237fa0c17aa1012dfb5683c90eb6d3b8..25db30284e3bab9ebad1ca7320db6611
  
      final ReentrantLock schedulingLock = new ReentrantLock();
      public final ChunkHolderManager chunkHolderManager;
-@@ -240,14 +240,13 @@ public final class ChunkTaskScheduler {
+@@ -244,14 +244,13 @@ public final class ChunkTaskScheduler {
          };
  
          // this may not be good enough, specifically thanks to stupid ass plugins swallowing exceptions
@@ -3022,7 +2976,7 @@ index 84cc9397237fa0c17aa1012dfb5683c90eb6d3b8..25db30284e3bab9ebad1ca7320db6611
      }
  
      public void raisePriority(final int x, final int z, final PrioritisedExecutor.Priority priority) {
-@@ -267,7 +266,7 @@ public final class ChunkTaskScheduler {
+@@ -271,7 +270,7 @@ public final class ChunkTaskScheduler {
      public void scheduleTickingState(final int chunkX, final int chunkZ, final ChunkHolder.FullChunkStatus toStatus,
                                       final boolean addTicket, final PrioritisedExecutor.Priority priority,
                                       final Consumer<LevelChunk> onComplete) {
@@ -3031,7 +2985,7 @@ index 84cc9397237fa0c17aa1012dfb5683c90eb6d3b8..25db30284e3bab9ebad1ca7320db6611
              this.scheduleChunkTask(chunkX, chunkZ, () -> {
                  ChunkTaskScheduler.this.scheduleTickingState(chunkX, chunkZ, toStatus, addTicket, priority, onComplete);
              }, priority);
-@@ -380,9 +379,50 @@ public final class ChunkTaskScheduler {
+@@ -384,9 +383,50 @@ public final class ChunkTaskScheduler {
          });
      }
  
@@ -3083,7 +3037,7 @@ index 84cc9397237fa0c17aa1012dfb5683c90eb6d3b8..25db30284e3bab9ebad1ca7320db6611
              this.scheduleChunkTask(chunkX, chunkZ, () -> {
                  ChunkTaskScheduler.this.scheduleChunkLoad(chunkX, chunkZ, toStatus, addTicket, priority, onComplete);
              }, priority);
-@@ -409,7 +449,7 @@ public final class ChunkTaskScheduler {
+@@ -413,7 +453,7 @@ public final class ChunkTaskScheduler {
              this.chunkHolderManager.processTicketUpdates();
          }
  
@@ -3092,7 +3046,7 @@ index 84cc9397237fa0c17aa1012dfb5683c90eb6d3b8..25db30284e3bab9ebad1ca7320db6611
              try {
                  if (onComplete != null) {
                      onComplete.accept(chunk);
-@@ -449,7 +489,9 @@ public final class ChunkTaskScheduler {
+@@ -453,7 +493,9 @@ public final class ChunkTaskScheduler {
                          if (!chunkHolder.upgradeGenTarget(toStatus)) {
                              this.schedule(chunkX, chunkZ, toStatus, chunkHolder, tasks);
                          }
@@ -3103,7 +3057,7 @@ index 84cc9397237fa0c17aa1012dfb5683c90eb6d3b8..25db30284e3bab9ebad1ca7320db6611
                      }
                  }
              } finally {
-@@ -463,7 +505,7 @@ public final class ChunkTaskScheduler {
+@@ -467,7 +509,7 @@ public final class ChunkTaskScheduler {
              tasks.get(i).schedule();
          }
  
@@ -3112,7 +3066,7 @@ index 84cc9397237fa0c17aa1012dfb5683c90eb6d3b8..25db30284e3bab9ebad1ca7320db6611
              // couldn't schedule
              try {
                  loadCallback.accept(chunk);
-@@ -652,7 +694,7 @@ public final class ChunkTaskScheduler {
+@@ -656,7 +698,7 @@ public final class ChunkTaskScheduler {
       */
      @Deprecated
      public PrioritisedExecutor.PrioritisedTask scheduleChunkTask(final Runnable run) {
@@ -3121,7 +3075,7 @@ index 84cc9397237fa0c17aa1012dfb5683c90eb6d3b8..25db30284e3bab9ebad1ca7320db6611
      }
  
      /**
-@@ -660,7 +702,7 @@ public final class ChunkTaskScheduler {
+@@ -664,7 +706,7 @@ public final class ChunkTaskScheduler {
       */
      @Deprecated
      public PrioritisedExecutor.PrioritisedTask scheduleChunkTask(final Runnable run, final PrioritisedExecutor.Priority priority) {
@@ -3130,7 +3084,7 @@ index 84cc9397237fa0c17aa1012dfb5683c90eb6d3b8..25db30284e3bab9ebad1ca7320db6611
      }
  
      public PrioritisedExecutor.PrioritisedTask createChunkTask(final int chunkX, final int chunkZ, final Runnable run) {
-@@ -669,28 +711,33 @@ public final class ChunkTaskScheduler {
+@@ -673,28 +715,33 @@ public final class ChunkTaskScheduler {
  
      public PrioritisedExecutor.PrioritisedTask createChunkTask(final int chunkX, final int chunkZ, final Runnable run,
                                                                 final PrioritisedExecutor.Priority priority) {
@@ -3176,7 +3130,7 @@ index 84cc9397237fa0c17aa1012dfb5683c90eb6d3b8..25db30284e3bab9ebad1ca7320db6611
  
      public boolean halt(final boolean sync, final long maxWaitNS) {
          this.lightExecutor.halt();
-@@ -699,6 +746,7 @@ public final class ChunkTaskScheduler {
+@@ -703,6 +750,7 @@ public final class ChunkTaskScheduler {
          this.loadExecutor.halt();
          final long time = System.nanoTime();
          if (sync) {
@@ -4413,10 +4367,10 @@ index 0000000000000000000000000000000000000000..6c1d55144f044f39926ddf998104950b
 +}
 diff --git a/src/main/java/io/papermc/paper/threadedregions/RegionizedTaskQueue.java b/src/main/java/io/papermc/paper/threadedregions/RegionizedTaskQueue.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..ac043fbc74874c205b821c3d2d011b921d5704fa
+index 0000000000000000000000000000000000000000..18cbf9f1bcf39d607809627cb47332c27dabfe59
 --- /dev/null
 +++ b/src/main/java/io/papermc/paper/threadedregions/RegionizedTaskQueue.java
-@@ -0,0 +1,752 @@
+@@ -0,0 +1,745 @@
 +package io.papermc.paper.threadedregions;
 +
 +import ca.spottedleaf.concurrentutil.collection.MultiThreadedQueue;
@@ -4646,13 +4600,6 @@ index 0000000000000000000000000000000000000000..ac043fbc74874c205b821c3d2d011b92
 +        }
 +
 +        public void drainTasks() {
-+            // first, update chunk loader
-+            final ServerLevel world = this.worldRegionTaskData.world;
-+            if (world.playerChunkLoader.tickMidTick()) {
-+                // only process ticket updates if the player chunk loader did anything
-+                world.chunkTaskScheduler.chunkHolderManager.processTicketUpdates();
-+            }
-+
 +            final PrioritisedQueue tickTaskQueue = this.tickTaskQueue;
 +            final PrioritisedQueue chunkTaskQueue = this.chunkQueue;
 +
@@ -4671,7 +4618,7 @@ index 0000000000000000000000000000000000000000..ac043fbc74874c205b821c3d2d011b92
 +
 +            if (allowedChunkTasks > 0) {
 +                // if we executed chunk tasks, we should try to process ticket updates for full status changes
-+                world.chunkTaskScheduler.chunkHolderManager.processTicketUpdates();
++                this.worldRegionTaskData.world.chunkTaskScheduler.chunkHolderManager.processTicketUpdates();
 +            }
 +        }
 +
@@ -5171,10 +5118,10 @@ index 0000000000000000000000000000000000000000..ac043fbc74874c205b821c3d2d011b92
 +}
 diff --git a/src/main/java/io/papermc/paper/threadedregions/RegionizedWorldData.java b/src/main/java/io/papermc/paper/threadedregions/RegionizedWorldData.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..f8eae93448d1d1c70bff68ff106139b61f0171c4
+index 0000000000000000000000000000000000000000..89e6dc92bfbb28d20f252eca5257db1d3d042327
 --- /dev/null
 +++ b/src/main/java/io/papermc/paper/threadedregions/RegionizedWorldData.java
-@@ -0,0 +1,649 @@
+@@ -0,0 +1,685 @@
 +package io.papermc.paper.threadedregions;
 +
 +import com.destroystokyo.paper.util.maplist.ReferenceList;
@@ -5198,7 +5145,6 @@ index 0000000000000000000000000000000000000000..f8eae93448d1d1c70bff68ff106139b6
 +import net.minecraft.network.chat.Component;
 +import net.minecraft.network.chat.MutableComponent;
 +import net.minecraft.network.protocol.game.ClientboundDisconnectPacket;
-+import net.minecraft.server.level.ChunkHolder;
 +import net.minecraft.server.level.ServerLevel;
 +import net.minecraft.server.level.ServerPlayer;
 +import net.minecraft.server.network.ServerGamePacketListenerImpl;
@@ -5498,6 +5444,7 @@ index 0000000000000000000000000000000000000000..f8eae93448d1d1c70bff68ff106139b6
 +
 +    // ticking chunks
 +    private final IteratorSafeOrderedReferenceSet<LevelChunk> entityTickingChunks = new IteratorSafeOrderedReferenceSet<>();
++    private final IteratorSafeOrderedReferenceSet<LevelChunk> chunks = new IteratorSafeOrderedReferenceSet<>();
 +
 +    // Paper/CB api hook misc
 +    // don't bother to merge/split these, no point
@@ -5659,6 +5606,14 @@ index 0000000000000000000000000000000000000000..f8eae93448d1d1c70bff68ff106139b6
 +    }
 +
 +    // entities hooks
++    public int getEntityCount() {
++        return this.allEntities.size();
++    }
++
++    public int getPlayerCount() {
++        return this.localPlayers.size();
++    }
++
 +    public Iterable<Entity> getLocalEntities() {
 +        return this.allEntities;
 +    }
@@ -5676,6 +5631,7 @@ index 0000000000000000000000000000000000000000..f8eae93448d1d1c70bff68ff106139b6
 +            throw new IllegalArgumentException("Entity " + entity + " is not under this region's control");
 +        }
 +        this.entityTickList.add(entity);
++        TickRegions.RegionStats.updateCurrentRegion();
 +    }
 +
 +    public boolean hasEntityTickingEntity(final Entity entity) {
@@ -5687,6 +5643,7 @@ index 0000000000000000000000000000000000000000..f8eae93448d1d1c70bff68ff106139b6
 +            throw new IllegalArgumentException("Entity " + entity + " is not under this region's control");
 +        }
 +        this.entityTickList.remove(entity);
++        TickRegions.RegionStats.updateCurrentRegion();
 +    }
 +
 +    public void forEachTickingEntity(final Consumer<Entity> action) {
@@ -5708,6 +5665,7 @@ index 0000000000000000000000000000000000000000..f8eae93448d1d1c70bff68ff106139b6
 +            if (entity instanceof ServerPlayer player) {
 +                this.localPlayers.add(player);
 +            }
++            TickRegions.RegionStats.updateCurrentRegion();
 +        }
 +    }
 +
@@ -5723,6 +5681,7 @@ index 0000000000000000000000000000000000000000..f8eae93448d1d1c70bff68ff106139b6
 +            if (entity instanceof ServerPlayer player) {
 +                this.localPlayers.remove(player);
 +            }
++            TickRegions.RegionStats.updateCurrentRegion();
 +        }
 +    }
 +
@@ -5812,16 +5771,40 @@ index 0000000000000000000000000000000000000000..f8eae93448d1d1c70bff68ff106139b6
 +    }
 +
 +    // ticking chunks
-+    public void addEntityTickingChunks(final LevelChunk levelChunk) {
++    public void addEntityTickingChunk(final LevelChunk levelChunk) {
 +        this.entityTickingChunks.add(levelChunk);
++        TickRegions.RegionStats.updateCurrentRegion();
 +    }
 +
 +    public void removeEntityTickingChunk(final LevelChunk levelChunk) {
 +        this.entityTickingChunks.remove(levelChunk);
++        TickRegions.RegionStats.updateCurrentRegion();
 +    }
 +
 +    public IteratorSafeOrderedReferenceSet<LevelChunk> getEntityTickingChunks() {
 +        return this.entityTickingChunks;
++    }
++
++    public void addChunk(final LevelChunk levelChunk) {
++        this.chunks.add(levelChunk);
++        TickRegions.RegionStats.updateCurrentRegion();
++    }
++
++    public void removeChunk(final LevelChunk levelChunk) {
++        this.chunks.remove(levelChunk);
++        TickRegions.RegionStats.updateCurrentRegion();
++    }
++
++    public IteratorSafeOrderedReferenceSet<LevelChunk> getChunks() {
++        return this.chunks;
++    }
++
++    public int getEntityTickingChunkCount() {
++        return this.entityTickingChunks.size();
++    }
++
++    public int getChunkCount() {
++        return this.chunks.size();
 +    }
 +}
 diff --git a/src/main/java/io/papermc/paper/threadedregions/Schedule.java b/src/main/java/io/papermc/paper/threadedregions/Schedule.java
@@ -8214,10 +8197,10 @@ index 0000000000000000000000000000000000000000..ee9f5e1f3387998cddbeb1dc6dc6e2b1
 +}
 diff --git a/src/main/java/io/papermc/paper/threadedregions/TickRegions.java b/src/main/java/io/papermc/paper/threadedregions/TickRegions.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..1cc7c32690ba7f7d7cdcbe239314f30f49ecb7bc
+index 0000000000000000000000000000000000000000..6c76c70574642aa4f3a8fce74e4608781ce132ec
 --- /dev/null
 +++ b/src/main/java/io/papermc/paper/threadedregions/TickRegions.java
-@@ -0,0 +1,355 @@
+@@ -0,0 +1,392 @@
 +package io.papermc.paper.threadedregions;
 +
 +import ca.spottedleaf.concurrentutil.scheduler.SchedulerThreadPool;
@@ -8235,6 +8218,7 @@ index 0000000000000000000000000000000000000000..1cc7c32690ba7f7d7cdcbe239314f30f
 +import org.slf4j.Logger;
 +import java.util.Iterator;
 +import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicInteger;
 +import java.util.concurrent.atomic.AtomicLong;
 +import java.util.function.BooleanSupplier;
 +
@@ -8287,7 +8271,9 @@ index 0000000000000000000000000000000000000000..1cc7c32690ba7f7d7cdcbe239314f30f
 +
 +    @Override
 +    public void onRegionCreate(final ThreadedRegionizer.ThreadedRegion<TickRegionData, TickRegionSectionData> region) {
-+        // nothing for now
++        final TickRegionData data = region.getData();
++        // post-region merge/split regioninfo update
++        data.getRegionStats().updateFrom(data.getOrCreateRegionizedData(data.world.worldRegionData));
 +    }
 +
 +    @Override
@@ -8314,6 +8300,35 @@ index 0000000000000000000000000000000000000000..1cc7c32690ba7f7d7cdcbe239314f30f
 +
 +    public static final class TickRegionSectionData implements ThreadedRegionizer.ThreadedRegionSectionData {}
 +
++    public static final class RegionStats {
++
++        private final AtomicInteger entityCount = new AtomicInteger();
++        private final AtomicInteger playerCount = new AtomicInteger();
++        private final AtomicInteger chunkCount = new AtomicInteger();
++
++        public int getEntityCount() {
++            return this.entityCount.get();
++        }
++
++        public int getPlayerCount() {
++            return this.playerCount.get();
++        }
++
++        public int getChunkCount() {
++            return this.chunkCount.get();
++        }
++
++        void updateFrom(final RegionizedWorldData data) {
++            this.entityCount.setRelease(data == null ? 0 : data.getEntityCount());
++            this.playerCount.setRelease(data == null ? 0 : data.getPlayerCount());
++            this.chunkCount.setRelease(data == null ? 0 : data.getChunkCount());
++        }
++
++        static void updateCurrentRegion() {
++            TickRegionScheduler.getCurrentRegion().getData().getRegionStats().updateFrom(TickRegionScheduler.getCurrentRegionizedWorldData());
++        }
++    }
++
 +    public static final class TickRegionData implements ThreadedRegionizer.ThreadedRegionData<TickRegionData, TickRegionSectionData> {
 +
 +        private static final AtomicLong ID_GENERATOR = new AtomicLong();
@@ -8335,10 +8350,18 @@ index 0000000000000000000000000000000000000000..1cc7c32690ba7f7d7cdcbe239314f30f
 +        // chunk holder manager data
 +        private final ChunkHolderManager.HolderManagerRegionData holderManagerRegionData = new ChunkHolderManager.HolderManagerRegionData();
 +
++        // async-safe read-only region data
++        private final RegionStats regionStats;
++
 +        private TickRegionData(final ThreadedRegionizer.ThreadedRegion<TickRegionData, TickRegionSectionData> region) {
 +            this.region = region;
 +            this.world = region.regioniser.world;
 +            this.taskQueueData = new RegionizedTaskQueue.RegionTaskQueueData(this.world.taskQueueRegionData);
++            this.regionStats = new RegionStats();
++        }
++
++        public RegionStats getRegionStats() {
++            return this.regionStats;
 +        }
 +
 +        public RegionizedTaskQueue.RegionTaskQueueData getTaskQueueData() {
@@ -8357,6 +8380,10 @@ index 0000000000000000000000000000000000000000..1cc7c32690ba7f7d7cdcbe239314f30f
 +
 +        public ChunkHolderManager.HolderManagerRegionData getHolderManagerRegionData() {
 +            return this.holderManagerRegionData;
++        }
++
++        <T> T getRegionizedData(final RegionizedData<T> regionizedData) {
++            return (T)this.regionizedData.get(regionizedData);
 +        }
 +
 +        <T> T getOrCreateRegionizedData(final RegionizedData<T> regionizedData) {
@@ -8540,13 +8567,6 @@ index 0000000000000000000000000000000000000000..1cc7c32690ba7f7d7cdcbe239314f30f
 +        protected boolean runRegionTasks(final BooleanSupplier canContinue) {
 +            final RegionizedTaskQueue.RegionTaskQueueData queue = this.region.taskQueueData;
 +
-+            // first, update chunk loader
-+            final ServerLevel world = this.region.world;
-+            if (world.playerChunkLoader.tickMidTick()) {
-+                // only process ticket updates if the player chunk loader did anything
-+                world.chunkTaskScheduler.chunkHolderManager.processTicketUpdates();
-+            }
-+
 +            boolean processedChunkTask = false;
 +
 +            boolean executeChunkTask = true;
@@ -8562,7 +8582,7 @@ index 0000000000000000000000000000000000000000..1cc7c32690ba7f7d7cdcbe239314f30f
 +
 +            if (processedChunkTask) {
 +                // if we processed any chunk tasks, try to process ticket level updates for full status changes
-+                world.chunkTaskScheduler.chunkHolderManager.processTicketUpdates();
++                this.region.world.chunkTaskScheduler.chunkHolderManager.processTicketUpdates();
 +            }
 +            return true;
 +        }
@@ -8575,13 +8595,14 @@ index 0000000000000000000000000000000000000000..1cc7c32690ba7f7d7cdcbe239314f30f
 +}
 diff --git a/src/main/java/io/papermc/paper/threadedregions/commands/CommandServerHealth.java b/src/main/java/io/papermc/paper/threadedregions/commands/CommandServerHealth.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..1fc6814f48596169db00fdee480f5059abeb23db
+index 0000000000000000000000000000000000000000..3bcb1dc98c61e025874cc9e008faa722581a530c
 --- /dev/null
 +++ b/src/main/java/io/papermc/paper/threadedregions/commands/CommandServerHealth.java
-@@ -0,0 +1,330 @@
+@@ -0,0 +1,355 @@
 +package io.papermc.paper.threadedregions.commands;
 +
 +import io.papermc.paper.threadedregions.RegionizedServer;
++import io.papermc.paper.threadedregions.RegionizedWorldData;
 +import io.papermc.paper.threadedregions.ThreadedRegionizer;
 +import io.papermc.paper.threadedregions.TickData;
 +import io.papermc.paper.threadedregions.TickRegionScheduler;
@@ -8612,8 +8633,15 @@ index 0000000000000000000000000000000000000000..1fc6814f48596169db00fdee480f5059
 +
 +public final class CommandServerHealth extends Command {
 +
-+    private static final DecimalFormat TWO_DECIMAL_PLACES = new DecimalFormat("#0.00");
-+    private static final DecimalFormat ONE_DECIMAL_PLACES = new DecimalFormat("#0.0");
++    private static final ThreadLocal<DecimalFormat> TWO_DECIMAL_PLACES = ThreadLocal.withInitial(() -> {
++        return new DecimalFormat("#,##0.00");
++    });
++    private static final ThreadLocal<DecimalFormat> ONE_DECIMAL_PLACES = ThreadLocal.withInitial(() -> {
++        return new DecimalFormat("#,##0.0");
++    });
++    private static final ThreadLocal<DecimalFormat> NO_DECIMAL_PLACES = ThreadLocal.withInitial(() -> {
++        return new DecimalFormat("#,##0");
++    });
 +
 +    private static final TextColor HEADER = TextColor.color(79, 164, 240);
 +    private static final TextColor PRIMARY = TextColor.color(48, 145, 237);
@@ -8632,12 +8660,23 @@ index 0000000000000000000000000000000000000000..1fc6814f48596169db00fdee480f5059
 +                                              final boolean newline) {
 +        return Component.text()
 +            .append(Component.text(prefix, PRIMARY, TextDecoration.BOLD))
-+            .append(Component.text(ONE_DECIMAL_PLACES.format(util * 100.0), CommandUtil.getUtilisationColourRegion(util)))
++            .append(Component.text(ONE_DECIMAL_PLACES.get().format(util * 100.0), CommandUtil.getUtilisationColourRegion(util)))
 +            .append(Component.text("% util at ", PRIMARY))
-+            .append(Component.text(TWO_DECIMAL_PLACES.format(mspt), CommandUtil.getColourForMSPT(mspt)))
++            .append(Component.text(TWO_DECIMAL_PLACES.get().format(mspt), CommandUtil.getColourForMSPT(mspt)))
 +            .append(Component.text(" MSPT at ", PRIMARY))
-+            .append(Component.text(TWO_DECIMAL_PLACES.format(tps), CommandUtil.getColourForTPS(tps)))
++            .append(Component.text(TWO_DECIMAL_PLACES.get().format(tps), CommandUtil.getColourForTPS(tps)))
 +            .append(Component.text(" TPS" + (newline ? "\n" : ""), PRIMARY))
++            .build();
++    }
++
++    private static Component formatRegionStats(final TickRegions.RegionStats stats, final boolean newline) {
++        return Component.text()
++            .append(Component.text("Chunks: ", PRIMARY))
++            .append(Component.text(NO_DECIMAL_PLACES.get().format((long)stats.getChunkCount()), INFORMATION))
++            .append(Component.text(" Players: ", PRIMARY))
++            .append(Component.text(NO_DECIMAL_PLACES.get().format((long)stats.getPlayerCount()), INFORMATION))
++            .append(Component.text(" Entities: ", PRIMARY))
++            .append(Component.text(NO_DECIMAL_PLACES.get().format((long)stats.getEntityCount()) + (newline ? "\n" : ""), INFORMATION))
 +            .build();
 +    }
 +
@@ -8679,7 +8718,10 @@ index 0000000000000000000000000000000000000000..1fc6814f48596169db00fdee480f5059
 +                formatRegionInfo("15s: ", util15s, mspt15s, tps15s, true)
 +            )
 +            .append(
-+                formatRegionInfo("1m: ", util1m, mspt1m, tps1m, false)
++                formatRegionInfo("1m: ", util1m, mspt1m, tps1m, true)
++            )
++            .append(
++                formatRegionStats(region.getData().getRegionStats(), false)
 +            )
 +
 +            .build();
@@ -8807,12 +8849,15 @@ index 0000000000000000000000000000000000000000..1fc6814f48596169db00fdee480f5059
 +                .append(Component.text(":\n", PRIMARY))
 +
 +                .append(Component.text("    ", PRIMARY))
-+                .append(Component.text(ONE_DECIMAL_PLACES.format(util * 100.0), CommandUtil.getUtilisationColourRegion(util)))
++                .append(Component.text(ONE_DECIMAL_PLACES.get().format(util * 100.0), CommandUtil.getUtilisationColourRegion(util)))
 +                .append(Component.text("% util at ", PRIMARY))
-+                .append(Component.text(TWO_DECIMAL_PLACES.format(mspt), CommandUtil.getColourForMSPT(mspt)))
++                .append(Component.text(TWO_DECIMAL_PLACES.get().format(mspt), CommandUtil.getColourForMSPT(mspt)))
 +                .append(Component.text(" MSPT at ", PRIMARY))
-+                .append(Component.text(TWO_DECIMAL_PLACES.format(tps), CommandUtil.getColourForTPS(tps)))
-+                .append(Component.text(" TPS" + ((i + 1) == len ? "" : "\n"), PRIMARY))
++                .append(Component.text(TWO_DECIMAL_PLACES.get().format(tps), CommandUtil.getColourForTPS(tps)))
++                .append(Component.text(" TPS\n", PRIMARY))
++
++                .append(Component.text("    ", PRIMARY))
++                .append(formatRegionStats(region.getData().getRegionStats(), (i + 1) != len))
 +                .build()
 +
 +                .clickEvent(ClickEvent.clickEvent(ClickEvent.Action.RUN_COMMAND, "/minecraft:execute as @s in " + world.getWorld().getKey().toString() + " run tp " + centerBlockX + ".5 " + yLoc + " " + centerBlockZ + ".5"))
@@ -8835,23 +8880,23 @@ index 0000000000000000000000000000000000000000..1fc6814f48596169db00fdee480f5059
 +
 +                .append(Component.text(" - ", LIST, TextDecoration.BOLD))
 +                .append(Component.text("Utilisation: ", PRIMARY))
-+                .append(Component.text(ONE_DECIMAL_PLACES.format(totalUtil * 100.0), CommandUtil.getUtilisationColourRegion(totalUtil / (double)maxThreadCount)))
++                .append(Component.text(ONE_DECIMAL_PLACES.get().format(totalUtil * 100.0), CommandUtil.getUtilisationColourRegion(totalUtil / (double)maxThreadCount)))
 +                .append(Component.text("% / ", PRIMARY))
-+                .append(Component.text(ONE_DECIMAL_PLACES.format(maxThreadCount * 100.0), INFORMATION))
++                .append(Component.text(ONE_DECIMAL_PLACES.get().format(maxThreadCount * 100.0), INFORMATION))
 +                .append(Component.text("%\n", PRIMARY))
 +
 +                .append(Component.text(" - ", LIST, TextDecoration.BOLD))
 +                .append(Component.text("Lowest Region TPS: ", PRIMARY))
-+                .append(Component.text(TWO_DECIMAL_PLACES.format(minTps) + "\n", CommandUtil.getColourForTPS(minTps)))
++                .append(Component.text(TWO_DECIMAL_PLACES.get().format(minTps) + "\n", CommandUtil.getColourForTPS(minTps)))
 +
 +
 +                .append(Component.text(" - ", LIST, TextDecoration.BOLD))
 +                .append(Component.text("Median Region TPS: ", PRIMARY))
-+                .append(Component.text(TWO_DECIMAL_PLACES.format(medianTps) + "\n", CommandUtil.getColourForTPS(medianTps)))
++                .append(Component.text(TWO_DECIMAL_PLACES.get().format(medianTps) + "\n", CommandUtil.getColourForTPS(medianTps)))
 +
 +                .append(Component.text(" - ", LIST, TextDecoration.BOLD))
 +                .append(Component.text("Highest Region TPS: ", PRIMARY))
-+                .append(Component.text(TWO_DECIMAL_PLACES.format(maxTps) + "\n", CommandUtil.getColourForTPS(maxTps)))
++                .append(Component.text(TWO_DECIMAL_PLACES.get().format(maxTps) + "\n", CommandUtil.getColourForTPS(maxTps)))
 +
 +                .append(Component.text("Highest ", HEADER, TextDecoration.BOLD))
 +                .append(Component.text(Integer.toString(lowestRegionsCount), INFORMATION, TextDecoration.BOLD))
@@ -14356,7 +14401,7 @@ index 88fca8b160df6804f30ed2cf8cf1f645085434e2..341650384498eebe3f7a3315c398bec9
      }
  
 diff --git a/src/main/java/net/minecraft/server/level/ServerChunkCache.java b/src/main/java/net/minecraft/server/level/ServerChunkCache.java
-index 736f37979c882e41e7571202df38eb6a2923fcb0..a493d8f2677c776951fbc20ebf1e61c91b9864ee 100644
+index 5c7b8041e96ede9e662dfdb5285539bf51304650..e664c568aba954e04878c06f3671ae74673dd342 100644
 --- a/src/main/java/net/minecraft/server/level/ServerChunkCache.java
 +++ b/src/main/java/net/minecraft/server/level/ServerChunkCache.java
 @@ -61,73 +61,42 @@ public class ServerChunkCache extends ChunkSource {
@@ -14726,7 +14771,7 @@ index 736f37979c882e41e7571202df38eb6a2923fcb0..a493d8f2677c776951fbc20ebf1e61c9
 +                throw new IllegalStateException("Polling tasks from non-owned region");
 +            }
 +            // Folia end - region threading
-             ServerChunkCache.this.chunkMap.level.playerChunkLoader.tickMidTick(); // Paper - replace player chunk loader
+             // Paper - replace player chunk loader
              if (ServerChunkCache.this.runDistanceManagerUpdates()) {
                  return true;
              }
@@ -17936,7 +17981,7 @@ index 93a1e990b0a6caae4143c2f9d09bfb368fa1d6db..ad3166481dd37f4b5380f8bf28653bb4
  
                  itemstack = entityliving2.getMainHandItem();
 diff --git a/src/main/java/net/minecraft/world/entity/Entity.java b/src/main/java/net/minecraft/world/entity/Entity.java
-index 4705d7066207250c03a5f98eef61554c901f2e35..580e75595d7fc8c5af5a0281b77f7be88a25a464 100644
+index 4705d7066207250c03a5f98eef61554c901f2e35..c659a574195f465ec3316f4c014621569e099cfc 100644
 --- a/src/main/java/net/minecraft/world/entity/Entity.java
 +++ b/src/main/java/net/minecraft/world/entity/Entity.java
 @@ -165,7 +165,7 @@ public abstract class Entity implements Nameable, EntityAccess, CommandSource {
@@ -18119,7 +18164,7 @@ index 4705d7066207250c03a5f98eef61554c901f2e35..580e75595d7fc8c5af5a0281b77f7be8
              return;
          }
          // CraftBukkit end
-@@ -3380,6 +3406,754 @@ public abstract class Entity implements Nameable, EntityAccess, CommandSource {
+@@ -3380,6 +3406,763 @@ public abstract class Entity implements Nameable, EntityAccess, CommandSource {
          this.portalEntrancePos = original.portalEntrancePos;
      }
  
@@ -18289,6 +18334,11 @@ index 4705d7066207250c03a5f98eef61554c901f2e35..580e75595d7fc8c5af5a0281b77f7be8
 +     * teleport will be refused.
 +     */
 +    public static final long TELEPORT_FLAG_TELEPORT_PASSENGERS = 1L << 1;
++    /**
++     * The flag will dismount any passengers and dismout from the current vehicle
++     * to teleport if and only if dismounting would result in the teleport being allowed.
++     */
++    public static final long TELEPORT_FLAG_UNMOUNT = 1L << 2;
 +
 +    protected void placeSingleSync(ServerLevel originWorld, ServerLevel destination, EntityTreeNode treeNode, long teleportFlags) {
 +        destination.addDuringTeleport(this);
@@ -18424,23 +18474,27 @@ index 4705d7066207250c03a5f98eef61554c901f2e35..580e75595d7fc8c5af5a0281b77f7be8
 +            return false;
 +        }
 +
++        if (!this.canTeleportAsync()) {
++            return false;
++        }
++        this.getBukkitEntity(); // force bukkit entity to be created before TPing
++        if ((teleportFlags & TELEPORT_FLAG_UNMOUNT) == 0L) {
++            for (Entity entity : this.getIndirectPassengers()) {
++                if (!entity.canTeleportAsync()) {
++                    return false;
++                }
++                entity.getBukkitEntity(); // force bukkit entity to be created before TPing
++            }
++        } else {
++            this.unRide();
++        }
++
 +        if ((teleportFlags & TELEPORT_FLAG_TELEPORT_PASSENGERS) != 0L) {
 +            if (this.isPassenger()) {
 +                return false;
 +            }
 +        } else {
 +            if (this.isVehicle() || this.isPassenger()) {
-+                return false;
-+            }
-+        }
-+
-+        this.getBukkitEntity(); // force bukkit entity to be created before TPing
-+        if (!this.canTeleportAsync()) {
-+            return false;
-+        }
-+        for (Entity entity : this.getIndirectPassengers()) {
-+            entity.getBukkitEntity(); // force bukkit entity to be created before TPing
-+            if (!entity.canTeleportAsync()) {
 +                return false;
 +            }
 +        }
@@ -18874,7 +18928,7 @@ index 4705d7066207250c03a5f98eef61554c901f2e35..580e75595d7fc8c5af5a0281b77f7be8
      @Nullable
      public Entity changeDimension(ServerLevel destination) {
          // CraftBukkit start
-@@ -3388,6 +4162,11 @@ public abstract class Entity implements Nameable, EntityAccess, CommandSource {
+@@ -3388,6 +4171,11 @@ public abstract class Entity implements Nameable, EntityAccess, CommandSource {
  
      @Nullable
      public Entity teleportTo(ServerLevel worldserver, PositionImpl location) {
@@ -18886,7 +18940,7 @@ index 4705d7066207250c03a5f98eef61554c901f2e35..580e75595d7fc8c5af5a0281b77f7be8
          // CraftBukkit end
          // Paper start - fix bad state entities causing dupes
          if (!isAlive() || !valid) {
-@@ -3471,6 +4250,12 @@ public abstract class Entity implements Nameable, EntityAccess, CommandSource {
+@@ -3471,6 +4259,12 @@ public abstract class Entity implements Nameable, EntityAccess, CommandSource {
          }
      }
  
@@ -18899,7 +18953,7 @@ index 4705d7066207250c03a5f98eef61554c901f2e35..580e75595d7fc8c5af5a0281b77f7be8
      protected void removeAfterChangingDimensions() {
          this.setRemoved(Entity.RemovalReason.CHANGED_DIMENSION);
      }
-@@ -3910,17 +4695,13 @@ public abstract class Entity implements Nameable, EntityAccess, CommandSource {
+@@ -3910,17 +4704,13 @@ public abstract class Entity implements Nameable, EntityAccess, CommandSource {
  
      // Paper start
      public void startSeenByPlayer(ServerPlayer player) {
@@ -18919,7 +18973,7 @@ index 4705d7066207250c03a5f98eef61554c901f2e35..580e75595d7fc8c5af5a0281b77f7be8
      }
      // Paper end
  
-@@ -4411,7 +5192,8 @@ public abstract class Entity implements Nameable, EntityAccess, CommandSource {
+@@ -4411,7 +5201,8 @@ public abstract class Entity implements Nameable, EntityAccess, CommandSource {
              }
          }
          // Paper end - fix MC-4
@@ -18929,7 +18983,7 @@ index 4705d7066207250c03a5f98eef61554c901f2e35..580e75595d7fc8c5af5a0281b77f7be8
              synchronized (this.posLock) { // Paper
              this.position = new Vec3(x, y, z);
              } // Paper
-@@ -4432,7 +5214,7 @@ public abstract class Entity implements Nameable, EntityAccess, CommandSource {
+@@ -4432,7 +5223,7 @@ public abstract class Entity implements Nameable, EntityAccess, CommandSource {
  
          // Paper start - never allow AABB to become desynced from position
          // hanging has its own special logic
@@ -18938,7 +18992,7 @@ index 4705d7066207250c03a5f98eef61554c901f2e35..580e75595d7fc8c5af5a0281b77f7be8
              this.setBoundingBox(this.makeBoundingBox());
          }
          // Paper end
-@@ -4519,6 +5301,12 @@ public abstract class Entity implements Nameable, EntityAccess, CommandSource {
+@@ -4519,6 +5310,12 @@ public abstract class Entity implements Nameable, EntityAccess, CommandSource {
          return this.removalReason != null;
      }
  
@@ -18951,7 +19005,7 @@ index 4705d7066207250c03a5f98eef61554c901f2e35..580e75595d7fc8c5af5a0281b77f7be8
      @Nullable
      public Entity.RemovalReason getRemovalReason() {
          return this.removalReason;
-@@ -4543,7 +5331,23 @@ public abstract class Entity implements Nameable, EntityAccess, CommandSource {
+@@ -4543,7 +5340,23 @@ public abstract class Entity implements Nameable, EntityAccess, CommandSource {
  
          if (reason != RemovalReason.UNLOADED_TO_CHUNK) this.getPassengers().forEach(Entity::stopRiding); // Paper - chunk system - don't adjust passenger state when unloading, it's just not safe (and messes with our logic in entity chunk unload)
          this.levelCallback.onRemove(reason);
@@ -24385,7 +24439,7 @@ index cd4ad8261e56365850068db1d83d6a8454026737..78f7e72f2912dae503c2dab7d1992b65
              List<String> offers = waitable.get();
              if (offers == null) {
 diff --git a/src/main/java/org/bukkit/craftbukkit/entity/CraftEntity.java b/src/main/java/org/bukkit/craftbukkit/entity/CraftEntity.java
-index 57a0dbb23a32123d30c3b3572f4d129be9d97847..b7b00aeadea76531d495e0478e09d3496677268c 100644
+index 57a0dbb23a32123d30c3b3572f4d129be9d97847..652c28a66d45680479a38463525afcf191c55ab4 100644
 --- a/src/main/java/org/bukkit/craftbukkit/entity/CraftEntity.java
 +++ b/src/main/java/org/bukkit/craftbukkit/entity/CraftEntity.java
 @@ -203,6 +203,16 @@ public abstract class CraftEntity implements org.bukkit.entity.Entity {
@@ -24456,7 +24510,7 @@ index 57a0dbb23a32123d30c3b3572f4d129be9d97847..b7b00aeadea76531d495e0478e09d349
 +                new net.minecraft.world.phys.Vec3(locationClone.getX(), locationClone.getY(), locationClone.getZ()),
 +                null, null, net.minecraft.world.phys.Vec3.ZERO,
 +                cause == null ? TeleportCause.UNKNOWN : cause,
-+                Entity.TELEPORT_FLAG_LOAD_CHUNK,
++                Entity.TELEPORT_FLAG_LOAD_CHUNK | Entity.TELEPORT_FLAG_UNMOUNT, // preserve behavior with old API: dismount the entity so it can teleport
 +                (Entity entityTp) -> {
 +                    ret.complete(Boolean.TRUE);
                  }
